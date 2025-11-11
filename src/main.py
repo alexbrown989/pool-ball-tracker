@@ -19,13 +19,14 @@ class PoolBallTracker:
         self.tracker = None
         self.predictor = None
         
-    def process_video(self, input_path: str, output_path: str = None):
+    def process_video(self, input_path: str, output_path: str = None, headless: bool = False):
         """
         Process a video file and track pool balls.
         
         Args:
             input_path: Path to input video
             output_path: Path to save output video (optional)
+            headless: Run without display (for Codespaces)
         """
         # Open video
         cap = cv2.VideoCapture(input_path)
@@ -44,6 +45,7 @@ class PoolBallTracker:
         print(f"Resolution: {width}x{height}")
         print(f"FPS: {fps}")
         print(f"Total frames: {total_frames}")
+        print(f"Headless mode: {headless}")
         
         # Initialize components
         self.detector = BallDetector(self.config)
@@ -55,6 +57,7 @@ class PoolBallTracker:
         if output_path:
             fourcc = cv2.VideoWriter_fourcc(*'mp4v')
             writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            print(f"Output will be saved to: {output_path}")
         
         frame_number = 0
         
@@ -74,32 +77,37 @@ class PoolBallTracker:
                 # Draw results on frame
                 annotated_frame = self.draw_tracking(frame, tracked_objects)
                 
-                # Show frame
-                cv2.imshow('Pool Ball Tracker', annotated_frame)
+                # Show frame only if not headless
+                if not headless:
+                    cv2.imshow('Pool Ball Tracker', annotated_frame)
+                    
+                    # Press 'q' to quit, space to pause
+                    key = cv2.waitKey(1) & 0xFF
+                    if key == ord('q'):
+                        break
+                    elif key == ord(' '):
+                        cv2.waitKey(0)
                 
                 # Write to output video
                 if writer:
                     writer.write(annotated_frame)
                 
-                # Press 'q' to quit, space to pause
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord('q'):
-                    break
-                elif key == ord(' '):
-                    cv2.waitKey(0)  # Wait until any key is pressed
-                
                 frame_number += 1
                 
+                # Show progress
                 if frame_number % 30 == 0:
-                    print(f"Processed {frame_number}/{total_frames} frames...")
+                    progress = (frame_number / total_frames) * 100
+                    print(f"Progress: {frame_number}/{total_frames} frames ({progress:.1f}%)")
         
         finally:
             cap.release()
             if writer:
                 writer.release()
-            cv2.destroyAllWindows()
+            if not headless:
+                cv2.destroyAllWindows()
             
-        print(f"\nProcessing complete!")
+        print(f"\n✅ Processing complete!")
+        print(f"Processed {frame_number} frames")
         if output_path:
             print(f"Output saved to: {output_path}")
     
@@ -192,6 +200,8 @@ def main():
                        help='Path to output video file (optional)')
     parser.add_argument('-c', '--config', type=str, default='../config/config.yaml',
                        help='Path to configuration file')
+    parser.add_argument('--headless', action='store_true',
+                       help='Run without display (for Codespaces/servers)')
     
     args = parser.parse_args()
     
@@ -208,7 +218,7 @@ def main():
     
     # Run tracker
     tracker = PoolBallTracker(args.config)
-    tracker.process_video(args.input, args.output)
+    tracker.process_video(args.input, args.output, headless=args.headless)
 
 
 if __name__ == '__main__':

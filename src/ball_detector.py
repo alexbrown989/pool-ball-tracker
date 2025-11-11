@@ -4,106 +4,128 @@ from typing import List, Tuple
 
 
 class BallDetector:
-    """Detects pool balls in video frames using color segmentation and Hough circles."""
+    """Detects pool balls using color segmentation - more robust than HoughCircles."""
     
     def __init__(self, config):
         self.config = config
         self.min_radius = config['ball_detection']['min_radius']
         self.max_radius = config['ball_detection']['max_radius']
         
-    def preprocess_frame(self, frame):
-        """Apply preprocessing to improve ball detection."""
-        # Convert to HSV for better color detection
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        
-        # Apply Gaussian blur to reduce noise
-        blurred = cv2.GaussianBlur(hsv, (9, 9), 2)
-        
-        return blurred
-    
     def detect_balls(self, frame) -> List[Tuple[int, int, int]]:
         """
-        Detect all balls in the frame.
+        Detect balls using color segmentation to isolate them from table felt.
+        Much more robust than HoughCircles for varied lighting and motion.
         
         Returns:
             List of (x, y, radius) tuples for detected balls
         """
-        preprocessed = self.preprocess_frame(frame)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        blurred_gray = cv2.GaussianBlur(gray, (9, 9), 2)
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        # Detect circles using Hough Circle Transform
-        circles = cv2.HoughCircles(
-            blurred_gray,
-            cv2.HOUGH_GRADIENT,
-            dp=1,
-            minDist=30,
-            param1=50,
-            param2=30,
-            minRadius=self.min_radius,
-            maxRadius=self.max_radius
-        )
+        # Mask for table felt (blue in your case)
+        # Adjust these values if needed for your specific table
+        lower_felt = np.array([90, 50, 50])   # Blue felt
+        upper_felt = np.array([130, 255, 255])
+        
+        # Create mask of the felt
+        mask_felt = cv2.inRange(hsv, lower_felt, upper_felt)
+        
+        # Invert to get everything BUT the felt (balls, pockets, rails)
+        mask_objects = cv2.bitwise_not(mask_felt)
+        
+        # Clean up the mask
+        kernel = np.ones((5, 5), np.uint8)
+        mask_objects = cv2.morphologyEx(mask_objects, cv2.MORPH_OPEN, kernel, iterations=1)
+        mask_objects = cv2.morphologyEx(mask_objects, cv2.MORPH_CLOSE, kernel, iterations=2)
+        
+        # Find contours
+        contours, _ = cv2.findContours(mask_objects, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
         
         detected_balls = []
         
-        if circles is not None:
-            circles = np.uint16(np.around(circles))
+        for contour in contours:
+            area = cv2.contourArea(contour)
             
-            for circle in circles[0, :]:
-                x, y, r = circle
-                
-                # Verify it's actually a ball by checking if it's roughly circular
-                # and has reasonable color properties
-                if self._verify_ball(frame, x, y, r):
-                    detected_balls.append((int(x), int(y), int(r)))
+            # Filter by area (balls should be within this range)
+            if not (200 < area < 3000):
+                continue
+            
+            # Get minimum enclosing circle
+            (x, y), radius = cv2.minEnclosingCircle(contour)
+            
+            # Check radius is reasonable
+            if not (self.min_radius < radius < self.max_radius):
+                continue
+            
+            # Check circularity (balls are round)
+            circularity = area / (np.pi * (radius ** 2))
+            
+            if not (0.65 < circularity < 1.3):  # Allow some tolerance
+                continue
+            
+            center_x, center_y = int(x), int(y)
+            radius = int(radius)
+            
+            # Final verification - reject pockets and false positives
+            if self._verify_ball(frame, center_x, center_y, radius):
+                detected_balls.append((center_x, center_y, radius))
         
         return detected_balls
     
     def _verify_ball(self, frame, x, y, r) -> bool:
-        """Verify that a detected circle is actually a ball."""
-        # Make sure coordinates are within frame bounds
+        """Verify detected circle is a ball, not a pocket or false positive."""
         h, w = frame.shape[:2]
+        
+        # Check bounds
         if x - r < 0 or x + r >= w or y - r < 0 or y + r >= h:
             return False
         
-        # Extract the circular region
+        # Create circular mask
         mask = np.zeros((h, w), dtype=np.uint8)
         cv2.circle(mask, (x, y), r, 255, -1)
         
-        # Check if the region has ball-like properties
-        # (relatively uniform color, not too dark, not the table felt)
-        roi = frame[max(0, y-r):min(h, y+r), max(0, x-r):min(w, x+r)]
+        # Get mean color in HSV
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        mean_hsv = cv2.mean(hsv, mask=mask)[:3]
         
+        brightness = mean_hsv[2]  # V channel
+        saturation = mean_hsv[1]  # S channel
+        
+        # CRITICAL: Reject dark pockets
+        if brightness < 70:
+            return False
+        
+        # Reject very dark corners (pockets)
+        margin = 100
+        is_corner = ((x < margin and y < margin) or 
+                     (x > w - margin and y < margin) or
+                     (x < margin and y > h - margin) or
+                     (x > w - margin and y > h - margin))
+        
+        if is_corner and brightness < 90:
+            return False
+        
+        # Check uniformity - balls are solid colors
+        roi = frame[max(0, y-r):min(h, y+r), max(0, x-r):min(w, x+r)]
         if roi.size == 0:
             return False
         
-        # Calculate mean color
-        mean_color = cv2.mean(roi)[:3]
-        
-        # Balls should have some brightness (not pure shadows)
-        if sum(mean_color) / 3 < 30:
+        std_dev = np.std(roi)
+        if std_dev > 55:  # Too much variation
             return False
         
         return True
     
     def is_white_ball(self, frame, x, y, r) -> bool:
-        """Check if a detected ball is the white cue ball."""
+        """Check if detected ball is the white cue ball."""
         hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
         
-        # Extract the ball region
         mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
         cv2.circle(mask, (x, y), r, 255, -1)
         
-        # Get the mean HSV values
         mean_hsv = cv2.mean(hsv, mask=mask)[:3]
         
-        # Check if it matches white ball criteria
-        lower = np.array(self.config['ball_detection']['white_ball']['lower'])
-        upper = np.array(self.config['ball_detection']['white_ball']['upper'])
-        
-        if (lower[0] <= mean_hsv[0] <= upper[0] and 
-            lower[1] <= mean_hsv[1] <= upper[1] and 
-            lower[2] <= mean_hsv[2] <= upper[2]):
+        # White ball has low saturation and high brightness
+        if mean_hsv[1] < 40 and mean_hsv[2] > 180:
             return True
         
         return False
