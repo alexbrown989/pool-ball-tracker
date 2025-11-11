@@ -2,28 +2,32 @@
 
 # Ball Detection Parameters
 ball_detection:
-  min_radius: 12
-  max_radius: 40
+  # --- THIS IS THE CRITICAL FIX ---
+  # Our debug ball had Radius=2.69. We set a min of 2.
+  min_radius: 10
+  # Max radius is a guess, 10 gives us plenty of room.
+  max_radius: 19
+  # ---
   
-  # HSV color thresholds
   white_ball:
-    lower: [0, 0, 180]
-    upper: [180, 40, 255]
+    lower: [0, 0, 160]
+    upper: [180, 50, 255]
   
   colored_balls:
     lower: [0, 30, 50]
     upper: [180, 255, 255]
   
-  # Table felt color (blue for your table)
+  # Best felt color (blue_3)
   felt_color:
-    lower: [90, 50, 50]
-    upper: [130, 255, 255]
+    lower: [95, 60, 80]
+    upper: [125, 255, 255]
 
 # Tracking Parameters
 tracking:
-  max_disappeared: 15
-  max_distance: 100  # Increased for fast motion
-  min_velocity: 0.8
+  max_disappeared: 7
+  # Max distance needs to be smaller if balls are tiny
+  max_distance: 150  # Lowered from 120
+  min_velocity: 0.5
 
 # Trajectory Prediction
 trajectory:
@@ -35,6 +39,23 @@ trajectory:
 video:
   output_fps: 30
   show_velocity_text: true
-  show_trajectory_line: false
+  show_trajectory_line: true
   highlight_color: [0, 255, 0]
   trajectory_color: [255, 0, 0]
+  
+  # Table crop
+  crop:
+    top: 210
+    bottom: 240
+    left: 340
+    right: 320
+
+pockets:
+  radius: 40 # "Kill zone" radius in pixels
+  locations:
+    - [330, 215]  # Example: Top-left
+    - [960, 210]  # Example: Top-middle
+    - [1605, 215] # Example: Top-right
+    - [340, 830]  # Example: Bottom-left
+    - [960, 840]  # Example: Bottom-middle
+    - [1605, 840] # Example: Bottom-right

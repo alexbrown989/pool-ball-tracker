@@ -2,6 +2,7 @@ import cv2
 import yaml
 import argparse
 import os
+import numpy as np
 from ball_detector import BallDetector
 from ball_tracker import BallTracker
 from trajectory_predictor import TrajectoryPredictor
@@ -112,83 +113,154 @@ class PoolBallTracker:
             print(f"Output saved to: {output_path}")
     
     def draw_tracking(self, frame, tracked_objects):
-        """Draw tracking information on the frame."""
+        """
+        Draws a clean, data-rich HUD (Heads-Up Display) that shows
+        stats for ALL moving balls.
+        """
         annotated = frame.copy()
+        h, w = annotated.shape[:2]
         
-        highlight_color = tuple(self.config['video']['highlight_color'])
-        trajectory_color = tuple(self.config['video']['trajectory_color'])
+        # --- 1. Draw the Semi-Transparent HUD Panel ---
+        # We make it taller to fit all the new stats
+        hud_height = 120 
+        overlay = annotated.copy()
+        cv2.rectangle(overlay, (0, 0), (w, hud_height), (0, 0, 0), -1)
+        alpha = 0.7 # Make it slightly more opaque for readability
+        annotated = cv2.addWeighted(overlay, alpha, annotated, 1 - alpha, 0)
+
+        # --- 2. Draw Text on the HUD ---
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale_small = 0.5
+        font_scale_large = 0.7
+        font_color = (255, 255, 255)
+        line_type = 2
         
+        # --- 2a. Find all moving balls ---
+        moving_balls_data = []
+        for obj_id, obj_data in tracked_objects.items():
+            if obj_data['is_moving']:
+                moving_balls_data.append((obj_id, obj_data))
+
+        # --- 2b. Draw Summary Info (Top Left) ---
+        count_text = f"Balls Tracked: {len(tracked_objects)}"
+        moving_text = f"Moving: {len(moving_balls_data)}"
+        
+        cv2.putText(annotated, count_text, (20, 30), font, font_scale_large, font_color, line_type)
+        cv2.putText(annotated, moving_text, (20, 60), font, font_scale_large, font_color, line_type)
+        
+        # --- 2c. Draw "Cool Metrics" for ALL Moving Balls (Right Side) ---
+        
+        # We start drawing the list of stats at this y-coordinate
+        hud_y_start = 30
+        line_height = 25 # How much space between each line of text
+        
+        cv2.putText(annotated, "--- Active Ball Stats ---", (250, hud_y_start), font, font_scale_small, font_color, 1)
+        
+        if not moving_balls_data:
+            cv2.putText(annotated, "All balls stationary", (250, hud_y_start + line_height), 
+                        font, font_scale_small, (200, 200, 200), 1)
+        
+        # Loop through all moving balls and print their stats on the HUD
+        for i, (obj_id, obj_data) in enumerate(moving_balls_data):
+            
+            # Calculate where to draw this line of text
+            current_y = hud_y_start + (i + 1) * line_height
+            
+            # Stop if we're about to draw off the panel
+            if current_y > hud_height - 10:
+                break
+                
+            speed = obj_data['speed']
+            velocity = obj_data['velocity']
+            
+            # Create the data-rich string
+            stats_text = (
+                f"ID {obj_id}:  Spd: {speed:<5.1f} px/f  |  "
+                f"Vel: ({velocity[0]:>5.1f}, {velocity[1]:>5.1f})"
+            )
+            
+            # Draw the text
+            cv2.putText(annotated, stats_text, (250, current_y), 
+                        font, font_scale_small, font_color, 1)
+
+        # --- 3. Pre-calculate all potential collisions ---
+        # (This logic is the same as before, and is very efficient)
+        all_collisions = {}
+        
+        for mover_id, mover_data in moving_balls_data:
+            first_collision_time = float('inf')
+            first_collision_point = None
+
+            for other_id, other_data in tracked_objects.items():
+                if mover_id == other_id: continue
+                if other_data['is_moving']: continue 
+                
+                collision_info = self.predictor.predict_ball_collision(
+                    mover_data['centroid'], mover_data['velocity'], mover_data['radius'],
+                    other_data['centroid'], other_data['velocity'], other_data['radius']
+                )
+                
+                if collision_info:
+                    cx, cy, time = collision_info
+                    if time < first_collision_time:
+                        first_collision_time = time
+                        first_collision_point = (int(cx), int(cy))
+            
+            if first_collision_point:
+                all_collisions[mover_id] = (first_collision_point, first_collision_time)
+
+        # --- 4. Draw on Play Area (ONLY Circles, IDs, and Trajectories) ---
         for obj_id, obj_data in tracked_objects.items():
             centroid = obj_data['centroid']
             radius = obj_data['radius']
-            velocity = obj_data['velocity']
-            speed = obj_data['speed']
             is_moving = obj_data['is_moving']
             
-            x, y = centroid
+            x, y = int(centroid[0]), int(centroid[1])
+            viz_radius = max(1, int(radius))
             
-            # Draw ball circle
-            if is_moving:
-                # Highlight moving balls
-                color = highlight_color
-                thickness = 3
-            else:
-                # Draw stationary balls normally
-                color = (0, 255, 255)  # Yellow for stationary
-                thickness = 2
+            # Draw the ball circle
+            color = tuple(self.config['video']['highlight_color']) if is_moving else (0, 255, 255)
+            thickness = 3 if is_moving else 2
+            cv2.circle(annotated, (x, y), viz_radius, color, thickness)
             
-            cv2.circle(annotated, (int(x), int(y)), radius, color, thickness)
+            # Draw the ID
+            id_text = f"ID:{obj_id}"
+            cv2.putText(annotated, id_text, (x - 20, y - viz_radius - 10),
+                        font, font_scale_small, color, 2)
             
-            # Draw object ID
-            text = f"ID:{obj_id}"
-            cv2.putText(annotated, text, (int(x) - 20, int(y) - radius - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
-            
-            # If ball is moving, show velocity and trajectory
-            if is_moving and self.config['video']['show_velocity_text']:
-                # Draw velocity vector
-                vx, vy = velocity
-                end_x = int(x + vx * 10)  # Scale for visibility
-                end_y = int(y + vy * 10)
-                cv2.arrowedLine(annotated, (int(x), int(y)), (end_x, end_y), 
-                              color, 2, tipLength=0.3)
-                
-                # Display speed
-                speed_text = f"v:{speed:.1f} px/f"
-                cv2.putText(annotated, speed_text, (int(x) - 30, int(y) + radius + 20),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-                
-                # Display velocity components
-                vel_text = f"({vx:.1f}, {vy:.1f})"
-                cv2.putText(annotated, vel_text, (int(x) - 30, int(y) + radius + 35),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, color, 1)
-            
-            # Predict and draw trajectory for moving balls
+            # Draw trajectory for this ball if it's moving
             if is_moving and self.config['video']['show_trajectory_line']:
-                trajectory = self.predictor.predict_trajectory(centroid, velocity, radius)
                 
-                if len(trajectory) > 1:
-                    # Draw trajectory line
-                    for i in range(len(trajectory) - 1):
-                        pt1 = trajectory[i]
-                        pt2 = trajectory[i + 1]
-                        # Fade the line as it goes further
-                        alpha = 1.0 - (i / len(trajectory))
-                        color_alpha = tuple(int(c * alpha) for c in trajectory_color)
-                        cv2.line(annotated, pt1, pt2, color_alpha, 2)
+                trajectory = self.predictor.predict_trajectory(
+                    obj_data['centroid'], 
+                    obj_data['velocity'], 
+                    obj_data['radius']
+                )
+                
+                collision_time = float('inf')
+                if obj_id in all_collisions:
+                    collision_point, collision_time = all_collisions[obj_id]
+                    trajectory = trajectory[:int(collision_time)] # Truncate line
                     
-                    # Draw predicted collision point
-                    collision_point = self.predictor.find_collision_point(trajectory)
-                    if collision_point:
-                        cv2.circle(annotated, collision_point, 8, (0, 0, 255), -1)
-                        cv2.putText(annotated, "Impact", 
-                                  (collision_point[0] - 25, collision_point[1] - 15),
-                                  cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
-        
-        # Add frame info
-        info_text = f"Frame: {len(tracked_objects)} balls tracked"
-        cv2.putText(annotated, info_text, (10, 30),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+                    # Draw a red "X" at the collision point
+                    cx, cy = collision_point
+                    cv2.circle(annotated, (cx, cy), 15, (0, 0, 255), 2)
+                    cv2.line(annotated, (cx-10, cy-10), (cx+10, cy+10), (0, 0, 255), 2)
+                    cv2.line(annotated, (cx+10, cy-10), (cx-10, cy+10), (0, 0, 255), 2)
+
+                # Draw the (potentially truncated) trajectory line
+                if len(trajectory) > 1:
+                    pts = np.array(trajectory, dtype=np.int32)
+                    cv2.polylines(annotated, [pts], isClosed=False, 
+                                  color=tuple(self.config['video']['trajectory_color']), 
+                                  thickness=2)
+                
+                # If no collision, draw the final "ghost ball" at the cushion
+                if collision_time == float('inf') and trajectory:
+                    final_pos = trajectory[-1]
+                    cv2.circle(annotated, final_pos, viz_radius, 
+                               tuple(self.config['video']['trajectory_color']), 
+                               2, cv2.LINE_AA)
         
         return annotated
 
