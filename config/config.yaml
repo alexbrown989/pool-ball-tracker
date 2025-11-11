@@ -1,1 +1,37 @@
+# Pool Ball Tracker Configuration
 
+# Ball Detection Parameters
+ball_detection:
+  # HSV color ranges for different ball colors
+  min_radius: 10  # minimum ball radius in pixels
+  max_radius: 50  # maximum ball radius in pixels
+  
+  # Color thresholds (HSV)
+  white_ball:  # Cue ball
+    lower: [0, 0, 200]
+    upper: [180, 30, 255]
+  
+  # For colored balls, we'll use dynamic detection
+  colored_balls:
+    lower: [0, 50, 50]
+    upper: [180, 255, 255]
+
+# Tracking Parameters
+tracking:
+  max_disappeared: 30  # frames before removing a tracked object
+  max_distance: 50     # max pixel distance to associate detections
+  min_velocity: 2.0    # minimum velocity (pixels/frame) to consider ball moving
+
+# Trajectory Prediction
+trajectory:
+  friction_coefficient: 0.98  # velocity decay per frame
+  prediction_frames: 30       # how many frames ahead to predict
+  cushion_bounce: 0.7         # coefficient of restitution for cushion bounces
+
+# Video Processing
+video:
+  output_fps: 30
+  show_velocity_text: true
+  show_trajectory_line: true
+  highlight_color: [0, 255, 0]  # BGR - Green
+  trajectory_color: [255, 0, 0]  # BGR - Blue
