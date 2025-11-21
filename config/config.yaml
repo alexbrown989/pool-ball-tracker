@@ -2,7 +2,7 @@
 
 # Ball Detection Parameters
 ball_detection:
-  # --- THIS IS THE CRITICAL FIX ---
+  
   # Our debug ball had Radius=2.69. We set a min of 2.
   min_radius: 10
   # Max radius is a guess, 10 gives us plenty of room.
