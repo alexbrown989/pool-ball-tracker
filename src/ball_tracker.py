@@ -1,3 +1,4 @@
+# src/ball_tracker.py
 import numpy as np
 from scipy.spatial import distance as dist
 from collections import OrderedDict, deque
@@ -5,30 +6,35 @@ from typing import List, Tuple, Dict
 
 
 class BallTracker:
-    """Tracks pool balls and automatically deregisters pocketed balls."""
+    """
+    Keeps track of balls over time to assign them persistent IDs.
+    """
     
     def __init__(self, config):
+        # We start counting IDs at 0.
         self.config = config
         self.next_object_id = 0
+        # Dictionary to store the balls. Key = ID, Value = (Location, Radius).
         self.objects = OrderedDict()
+        # Count how many frames a ball has been missing. 
+        # If it's missing too long, we assume it went in a pocket.
         self.disappeared = OrderedDict()
+        # Keep a history of past positions to calculate speed.
         self.position_history = OrderedDict()
         self.max_history = 10
-        
+        # Settings from config.yaml
         self.max_disappeared = config['tracking']['max_disappeared']
         self.max_distance = config['tracking']['max_distance']
         self.min_velocity = config['tracking']['min_velocity']
-        
         self.fast_moving = OrderedDict()
-        
-        # --- NEW POCKET DEFINITIONS ---
+        # Pocket settings
         self.pocket_radius = config['pockets']['radius']
         self.pocket_centers = [tuple(loc) for loc in config['pockets']['locations']]
 
     def _is_in_pocket(self, x: float, y: float) -> bool:
-        """Helper function to check if a point (x, y) is inside any pocket."""
+        """Check if x,y is inside a pocket circle."""
         for (px, py) in self.pocket_centers:
-            # Check distance from point to pocket center
+            # Pythagorean theorem distance check.
             if np.sqrt((x - px)**2 + (y - py)**2) < self.pocket_radius:
                 return True
         return False
@@ -51,41 +57,54 @@ class BallTracker:
             del self.fast_moving[object_id]
             
     def update(self, detections: List[Tuple[int, int, int]], frame_number: int):
-        """Update tracked objects with new detections."""
-        
+        """
+        The core logic: Match new detections to existing balls.
+        """
+        # CASE 1: No balls found in this frame.
         if len(detections) == 0:
+            # Mark all existing balls as "disappeared".
             for object_id in list(self.disappeared.keys()):
                 self.disappeared[object_id] += 1
+                # If gone for too long, remove (deregister) them.
                 patience = self.max_disappeared * 2 if self.fast_moving.get(object_id, False) else self.max_disappeared
                 if self.disappeared[object_id] > patience:
                     self.deregister(object_id)
             return self.get_tracked_objects(frame_number)
-        
+
+        # Convert the new detections into a math-friendly format (NumPy array).
         input_centroids = np.array([(x, y) for x, y, r in detections])
         input_radii = np.array([r for x, y, r in detections])
-        
+
+        # CASE 2: We are not tracking anything yet.
         if len(self.objects) == 0:
+            # Just register everything we see as a new ball.
             for i in range(len(input_centroids)):
                 self.register(input_centroids[i], input_radii[i])
+        # CASE 3: We have existing balls and new detections. MATCH THEM!
         else:
             object_ids = list(self.objects.keys())
             object_centroids = np.array([self.objects[oid][0] for oid in object_ids])
             
+            # Calculate the distance between EVERY existing ball and EVERY new detection.
             D = dist.cdist(object_centroids, input_centroids)
-            
+
+            # Find the smallest distances (closest matches).
             rows = D.min(axis=1).argsort()
             cols = D.argmin(axis=1)[rows]
             
             used_rows = set()
             used_cols = set()
-            
+
+            # Loop through the matches.
             for (row, col) in zip(rows, cols):
                 if row in used_rows or col in used_cols:
                     continue
-                
+
+                # Update the existing ball with the new location.
                 object_id = object_ids[row]
                 threshold = self.max_distance * 1.5 if self.fast_moving.get(object_id, False) else self.max_distance
-                
+
+                # Check: Is the distance too far? (Did the ball teleport?)
                 if D[row, col] > threshold:
                     continue
                     
@@ -93,7 +112,8 @@ class BallTracker:
                 self.disappeared[object_id] = 0
                 used_rows.add(row)
                 used_cols.add(col)
-            
+
+            # If an existing ball was NOT matched, mark it as disappeared.
             unused_rows = set(range(D.shape[0])) - used_rows
             for row in unused_rows:
                 object_id = object_ids[row]
@@ -101,25 +121,24 @@ class BallTracker:
                 patience = self.max_disappeared * 2 if self.fast_moving.get(object_id, False) else self.max_disappeared
                 if self.disappeared[object_id] > patience:
                     self.deregister(object_id)
-            
+
+            # If a new detection was NOT matched, it's a new ball. Register it.
             unused_cols = set(range(D.shape[1])) - used_cols
             for col in unused_cols:
                 self.register(input_centroids[col], input_radii[col])
         
-        # --- THIS IS THE NEW FIX ---
-        # After updating all positions, check if any ball is now
-        # inside a pocket and deregister it if so.
+        # Check if any ball fell into a pocket.
         pocketed_ids = []
         for object_id, (centroid, radius) in self.objects.items():
             if self._is_in_pocket(centroid[0], centroid[1]):
                 pocketed_ids.append(object_id)
         
         for object_id in pocketed_ids:
-            # print(f"Ball {object_id} was pocketed! Deregistering.") # Optional debug
+            # Remove pocketed balls.
             self.deregister(object_id)
-        # --- END OF FIX ---
+        
             
-        # Update position history
+        # Save position to history (for calculating speed later).
         for object_id in self.objects.keys():
              self.position_history[object_id].append((self.objects[object_id][0][0], self.objects[object_id][0][1], frame_number))
         
