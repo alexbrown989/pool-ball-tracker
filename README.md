@@ -37,11 +37,22 @@ Once the screen loads and you see a terminal (a text box) at the bottom:
     python src/main.py data/videos/pool_fixed.mp4
     ```
 
-_(Note: Make sure you have a video file in `data/videos/` to test with!)_
+## Want to use your own video? 📹
 
-## How It Works (For the Curious)
-* **`src/`**: This folder contains the "brains" of the operation (the Python code).
-* **`config/config.yaml`**: Want to change settings? You can adjust things like ball colors or friction here without changing the code.
-* **`output/`**: This is where your processed videos will be saved.
+You can absolutely use your own clips! Just follow these three rules to make it work:
 
-Enjoy tracking!
+### 1. It MUST be "Overhead"
+The camera needs to be looking straight down at the table (a bird's-eye view).
+* ✅ **Good:** A drone shot or a camera mounted on the ceiling.
+* ❌ **Bad:** A video taken from the side while standing next to the table. (The math won't work if the table looks like a trapezoid!)
+
+### 2. Update the "Crop" Settings
+The code needs to know exactly where the table is so it doesn't accidentally track shoes or chairs on the floor.
+1.  Open the file `config/config.yaml`.
+2.  Look for the `crop` section.
+3.  Adjust the `top`, `bottom`, `left`, and `right` numbers. These are the number of pixels to "cut off" from each side of the video until ONLY the blue/green felt is visible.
+
+### 3. Run with your file path
+Instead of the default command, tell Python where your new video is:
+```bash
+python src/main.py path/to/your/new_video.mp4
