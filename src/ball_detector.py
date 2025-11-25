@@ -3,26 +3,7 @@ import numpy as np
 from typing import List, Tuple
 
 class BallDetector:
-     # --- Sarah's Added Feature: Ball Confidence Score ---
-    def compute_confidence(self, contour, radius, hsv_mean):
-        # 1. Circularity confidence
-        area = cv2.contourArea(contour)
-        perimeter = cv2.arcLength(contour, True)
-        circularity = 0
-        if perimeter != 0:
-            circularity = 4 * math.pi * (area / (perimeter * perimeter))
-        circularity_score = min(1.0, max(0.0, circularity))
 
-        # 2. Radius confidence (ideal radius ~ 14 px)
-        ideal_radius = 14
-        radius_score = max(0.0, 1 - abs(radius - ideal_radius) / ideal_radius)
-
-        # 3. Color stability confidence (bright ball = higher score)
-        brightness_score = hsv_mean[2] / 255.0
-
-        # Combine (weighted average)
-        confidence = (0.5*circularity_score + 0.3*radius_score + 0.2*brightness_score)
-        return round(confidence, 2)
     """
     Detects pool balls using computer vision techniques.
     """
