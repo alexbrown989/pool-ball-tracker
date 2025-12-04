@@ -1,5 +1,5 @@
-
-# src/trajectory_predictor.pyimport numpy as np
+# src/trajectory_predictor.py
+import numpy as np
 from typing import List, Tuple, Optional
 
 class TrajectoryPredictor:

@@ -3,6 +3,7 @@ import yaml             # A tool to read our settings file (config.yaml).
 import argparse         # A tool to read commands you type in the terminal.
 import os               # A tool to work with files and folders on your computer.
 import numpy as np      # "NumPy": A math tool for working with lists of numbers.
+import csv              # For writing CSV files
 
 # These are the custom tools we wrote in the other files.
 from ball_detector import BallDetector
@@ -69,6 +70,11 @@ class PoolBallTracker:
             writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
             print(f"Output will be saved to: {output_path}")
         
+        # Data collection for CSV files
+        velocity_data = []  # List of (frame, ball_id, vx, vy, speed)
+        trajectory_predictions = {}  # Dict: {ball_id: [(frame_made, trajectory_points), ...]}
+        trajectory_errors = []  # List of (frame, ball_id, prediction_offset, error_percent)
+        
         frame_number = 0
         
         # --- THE MAIN LOOP ---
@@ -89,6 +95,94 @@ class PoolBallTracker:
                 # 3. ASK THE TRACKER: "Which ball is which?"
                 # It matches the new locations to the old ones to give them IDs.
                 tracked_objects = self.tracker.update(detections, frame_number)
+                
+                # 3.5. COLLECT VELOCITY DATA
+                for obj_id, obj_data in tracked_objects.items():
+                    vx, vy = obj_data['velocity']
+                    speed = obj_data['speed']
+                    velocity_data.append({
+                        'frame': frame_number,
+                        'ball_id': obj_id,
+                        'vx': vx,
+                        'vy': vy,
+                        'speed': speed
+                    })
+                
+                # 3.6. STORE PREDICTIONS AND COMPARE WITH ACTUAL POSITIONS
+                # Store new predictions for moving balls
+                for obj_id, obj_data in tracked_objects.items():
+                    if obj_data['is_moving']:
+                        trajectory = self.predictor.predict_trajectory(
+                            obj_data['centroid'],
+                            obj_data['velocity'],
+                            obj_data['radius']
+                        )
+                        if obj_id not in trajectory_predictions:
+                            trajectory_predictions[obj_id] = []
+                        trajectory_predictions[obj_id].append({
+                            'frame_made': frame_number,
+                            'trajectory': trajectory,
+                            'start_position': obj_data['centroid']
+                        })
+                
+                # Compare stored predictions with actual positions
+                for obj_id, predictions_list in list(trajectory_predictions.items()):
+                    if obj_id not in tracked_objects:
+                        # Ball no longer tracked, remove its predictions
+                        del trajectory_predictions[obj_id]
+                        continue
+                    
+                    current_pos = tracked_objects[obj_id]['centroid']
+                    
+                    # Check each stored prediction and filter out old ones
+                    valid_predictions = []
+                    for pred_entry in predictions_list:
+                        frame_made = pred_entry['frame_made']
+                        trajectory = pred_entry['trajectory']
+                        frames_ahead = frame_number - frame_made
+                        
+                        # Remove predictions beyond the prediction window
+                        if frames_ahead >= len(trajectory):
+                            continue  # Skip this prediction, don't add to valid_predictions
+                        
+                        valid_predictions.append(pred_entry)
+                        
+                        # Only compare if we're within the prediction window and have moved forward
+                        if 0 < frames_ahead < len(trajectory):
+                            predicted_pos = trajectory[frames_ahead]
+                            actual_pos = current_pos
+                            
+                            # Calculate error
+                            error_distance = np.sqrt(
+                                (predicted_pos[0] - actual_pos[0])**2 + 
+                                (predicted_pos[1] - actual_pos[1])**2
+                            )
+                            
+                            # Calculate % error (relative to distance traveled)
+                            distance_traveled = np.sqrt(
+                                (actual_pos[0] - pred_entry['start_position'][0])**2 +
+                                (actual_pos[1] - pred_entry['start_position'][1])**2
+                            )
+                            
+                            if distance_traveled > 0:
+                                error_percent = (error_distance / distance_traveled) * 100
+                            else:
+                                error_percent = 0.0
+                            
+                            trajectory_errors.append({
+                                'frame': frame_number,
+                                'ball_id': obj_id,
+                                'prediction_offset': frames_ahead,
+                                'predicted_x': predicted_pos[0],
+                                'predicted_y': predicted_pos[1],
+                                'actual_x': actual_pos[0],
+                                'actual_y': actual_pos[1],
+                                'error_distance': error_distance,
+                                'error_percent': error_percent
+                            })
+                    
+                    # Update the predictions list to only include valid ones
+                    trajectory_predictions[obj_id] = valid_predictions
                 
                 # 4. DRAW EVERYTHING: Draw circles, lines, and text on the picture.
                 annotated_frame = self.draw_tracking(frame, tracked_objects)
@@ -124,10 +218,16 @@ class PoolBallTracker:
             if not headless:
                 cv2.destroyAllWindows()
             
-        print(f"\n✅ Processing complete!")
+            # Write CSV files
+            self._write_velocity_csv(velocity_data, input_path)
+            self._write_trajectory_error_csv(trajectory_errors, input_path)
+            
+        print(f"\nProcessing complete!")
         print(f"Processed {frame_number} frames")
         if output_path:
             print(f"Output saved to: {output_path}")
+        print(f"Velocity data saved to CSV")
+        print(f"Trajectory error data saved to CSV")
     
     def draw_tracking(self, frame, tracked_objects):
         """
@@ -273,6 +373,63 @@ class PoolBallTracker:
                                2, cv2.LINE_AA)
         
         return annotated
+    
+    def _write_velocity_csv(self, velocity_data, input_path):
+        """Write velocity data to CSV file."""
+        # Determine output path - use output directory relative to project root
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+        # Use same logic as video output - if input is relative, make output relative too
+        abs_input = os.path.abspath(input_path)
+        input_dir = os.path.dirname(abs_input)
+        
+        # Find project root by looking for 'output' directory or going up from data/videos
+        if 'data' in input_dir:
+            # Input is in data folder, go up to project root
+            project_root = os.path.dirname(input_dir) if 'videos' in input_dir else input_dir
+        else:
+            # Input is elsewhere, use same directory structure
+            project_root = input_dir
+        
+        output_dir = os.path.join(project_root, 'output')
+        os.makedirs(output_dir, exist_ok=True)
+        csv_path = os.path.join(output_dir, f'{base_name}_velocity.csv')
+        
+        with open(csv_path, 'w', newline='') as csvfile:
+            fieldnames = ['frame', 'ball_id', 'vx', 'vy', 'speed']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(velocity_data)
+        
+        print(f"Velocity CSV saved to: {csv_path}")
+    
+    def _write_trajectory_error_csv(self, trajectory_errors, input_path):
+        """Write trajectory error data to CSV file."""
+        # Determine output path - use output directory relative to project root
+        base_name = os.path.splitext(os.path.basename(input_path))[0]
+        # Use same logic as video output - if input is relative, make output relative too
+        abs_input = os.path.abspath(input_path)
+        input_dir = os.path.dirname(abs_input)
+        
+        # Find project root by looking for 'output' directory or going up from data/videos
+        if 'data' in input_dir:
+            # Input is in data folder, go up to project root
+            project_root = os.path.dirname(input_dir) if 'videos' in input_dir else input_dir
+        else:
+            # Input is elsewhere, use same directory structure
+            project_root = input_dir
+        
+        output_dir = os.path.join(project_root, 'output')
+        os.makedirs(output_dir, exist_ok=True)
+        csv_path = os.path.join(output_dir, f'{base_name}_trajectory_error.csv')
+        
+        with open(csv_path, 'w', newline='') as csvfile:
+            fieldnames = ['frame', 'ball_id', 'prediction_offset', 'predicted_x', 'predicted_y',
+                         'actual_x', 'actual_y', 'error_distance', 'error_percent']
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(trajectory_errors)
+        
+        print(f"Trajectory error CSV saved to: {csv_path}")
 
 
 def main():
